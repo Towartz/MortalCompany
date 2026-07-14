@@ -33,7 +33,6 @@ libs/
 # ===== IL2CPP reverse-engineering dumps (regeneratable, huge) =====
 **/Dump0/
 **/dump.cs
-**/il2cpp.h
 **/il2cpp-functions.h
 **/il2cpp-types.h
 **/generics_dump.txt

@@ -99,6 +99,7 @@ jobjectArray GetFeatureList(JNIEnv *env, jobject context) {
         OBFUSCATE("57_Button_Spawn Enemies"),
         OBFUSCATE("58_Button_Boombox Spam"),
         OBFUSCATE("59_Button_Shuffle Items"),
+        OBFUSCATE("62_Button_Spawn Items"),
     };
 
     int Total_Feature = sizeof features / sizeof features[0];
@@ -181,6 +182,7 @@ void Changes(JNIEnv *env, jclass clazz, jobject obj,
         case 57: g_config.griefSpawnEnemies = true; break; // Spawn Enemies (oneshot)
         case 58: g_config.griefBoombox = true; break;      // Boombox Spam (oneshot)
         case 59: g_config.griefShuffleItems = true; break; // Shuffle Items (oneshot)
+        case 62: g_config.spawnItems = true; break;        // Spawn Items (oneshot)
 
         default: break;
     }

@@ -1309,6 +1309,33 @@ void ApplyCheats() {
             LOGD("Grief: enemy spawners triggered x%d", n);
         }
 
+        // Spawn scrap items into the ship (best-effort — method names vary by build).
+        if (g_config.spawnItems) {
+            int n = 0;
+            auto* rm = Unity::Object::FindObjectsOfType<void>("RoundManager");
+            if (rm) {
+                for (uintptr_t i = 0; i < rm->m_uMaxLength; i++) {
+                    void* m = rm->At(i);
+                    if (!m) continue;
+                    CRASH_GUARD(InvokeManaged(m, "RoundManager", "SpawnScrapInShip", 0, nullptr));
+                    n++;
+                }
+            }
+            if (n == 0) {
+                // Fallback: StartOfRound also exposes a scrap spawn on some builds.
+                auto* sor = Unity::Object::FindObjectsOfType<void>("StartOfRound");
+                if (sor) {
+                    for (uintptr_t i = 0; i < sor->m_uMaxLength; i++) {
+                        void* s = sor->At(i);
+                        if (!s) continue;
+                        CRASH_GUARD(InvokeManaged(s, "StartOfRound", "SpawnScrapInShip", 0, nullptr));
+                        n++;
+                    }
+                }
+            }
+            LOGD("Spawn Items: scrap spawners triggered x%d", n);
+        }
+
         // Shuffle/drop every item to a random spot near the ship.
         if (g_config.griefShuffleItems) {
             auto* items = Unity::Object::FindObjectsOfType<void>("InventoryItem", true);
@@ -1341,6 +1368,7 @@ void ApplyCheats() {
         g_config.griefSpawnEnemies = false;
         g_config.griefBoombox = false;
         g_config.griefShuffleItems = false;
+        g_config.spawnItems = false;
     }
 
     if (g_config.autoReward) {

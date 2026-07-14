@@ -44,6 +44,7 @@ struct Config {
     bool griefSpawnEnemies = false;
     bool griefBoombox = false;
     bool griefShuffleItems = false;
+    bool spawnItems = false;        // Spawn Items (oneshot — drops scrap into the ship)
     bool espPlayers = false;
     bool espObjects = false;
     bool espBoxes = true;

@@ -1,0 +1,71 @@
+# ===== Android / Gradle build output =====
+.gradle/
+.gradle
+**/.gradle/
+build/
+**/build/
+.cache/
+app/build/
+.release/
+local.properties
+
+# ===== Native build artifacts (regeneratable) =====
+*.so
+*.o
+*.o.d
+*.a
+# LGL app (main) needs these prebuilt static libs referenced by app/src/main/jni/Android.mk
+!app/src/main/jni/Dobby/**/*.a
+!app/src/main/jni/KittyMemory/Deps/Keystone/libs-android/**/*.a
+# ndk-build output dirs
+**/obj/
+**/libs/armeabi-v7a/
+**/libs/arm64-v8a/
+**/libs/x86/
+**/libs/x86_64/
+**/libs/*/libfbk.so
+obj/
+libs/
+# cxx metadata / logs
+**/cxx/
+**/.cxx/
+
+# ===== IL2CPP reverse-engineering dumps (regeneratable, huge) =====
+**/Dump0/
+**/dump.cs
+**/il2cpp.h
+**/il2cpp-functions.h
+**/il2cpp-types.h
+**/generics_dump.txt
+**/script.json
+**/stringliteral.json
+**/il2cpp_header_to_binja.py
+**/il2cpp_header_to_ghidra.py
+**/ghidra.py
+**/ghidra_wasm.py
+**/ghidra_with_struct.py
+**/hopper-py3.py
+**/ida.py
+**/ida_py3.py
+**/ida_with_struct.py
+**/ida_with_struct_py3.py
+
+# ===== Large standalone toolkits / reference dumps (kept out of repo) =====
+/references/
+/il2cpp_src/*
+# Re-include ONLY the resolver the cheat builds depend on (Android.mk -> ../../il2cpp_src/Il2cpp_Resolver_Android)
+!il2cpp_src/Il2cpp_Resolver_Android/
+/imgui_src/
+/lglteam-menu/
+
+# ===== Archives / misc =====
+*.zip
+*.keystore
+debug.keystore
+nul
+
+# ===== IDE / OS =====
+*.iml
+.idea/
+.DS_Store
+Thumbs.db

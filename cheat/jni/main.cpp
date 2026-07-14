@@ -42,20 +42,11 @@ static bool g_inputOK      = false;  // true = at least one input hook is confir
 static bool g_mainHookOK   = false;
 static bool g_displaySizeChanged = false;
 // EGL surface dimensions updated every frame in my_eglSwapBuffers.
-// Used by the Unity GetTouch hook to flip Y from bottom-left to top-left origin.
 static volatile int g_physW = 0;
 static volatile int g_physH = 0;
 static double g_LastTime   = 0.0;
 static pthread_t g_worker;
 
-// ── Unity Input.GetTouch hook (primary touch source for Unity games) ──
-typedef void (*Input_GetTouch_t)(void* ret, int index);
-static Input_GetTouch_t orig_GetTouch = nullptr;
-// g_getTouchHooked: hook_func() succeeded for GetTouch
-// g_getTouchWorking: at least one actual event has been delivered through it
-static bool g_getTouchHooked  = false;
-static bool g_getTouchWorking = false;
-static volatile bool g_wantCapture = false;
 // AInputQueue hook confirmed installed
 static bool g_ainputHooked = false;
 
@@ -72,7 +63,7 @@ struct InputEvent {
     float   x, y;          // already in EGL surface space (top-left, y-down)
     int32_t buttonState;
     float   axisH, axisV;  // scroll axes
-    bool    fromUnity;     // true = Unity GetTouch (y already flipped); false = AInputQueue
+    bool    fromUnity;     // vestigial (always false; retained for ABI stability)
     int32_t keyCode;       // only for KEY events
     int32_t metaState;     // key modifier state (AMETA_*)
     int32_t scanCode;      // key scan code for SetKeyEventNativeData
@@ -150,14 +141,11 @@ static bool EnqueueAInputEvent(AInputEvent* ev) {
 }
 
 static void my_AInputQueue_finishEvent(void* queue, void* event, int handled) {
-    // Only capture via AInputQueue when GetTouch is NOT yet delivering events.
-    // Running both paths simultaneously double-feeds ImGui: WantCaptureMouse
-    // becomes sticky, the GetTouch hook then sets every touch phase=Stationary,
-    // and the game can never process input — causing a full freeze.
-    // Once GetTouch is working (g_getTouchWorking=true) this path stays silent.
-    if (event && g_imguiReady && !g_getTouchWorking)
+    // Capture every event into the thread-safe queue; it's drained on the render
+    // thread before ImGui::NewFrame so ImGuiIO is only ever touched by one thread.
+    if (event && g_imguiReady)
         EnqueueAInputEvent((AInputEvent*)event);
-    // Always forward — never disturb the game's input pipeline.
+    // Always forward — never disturb the game's input pipeline (prevents freeze).
     if (orig_AInputQueue_finishEvent && is_valid_fn_ptr(orig_AInputQueue_finishEvent))
         orig_AInputQueue_finishEvent(queue, event, handled);
 }
@@ -214,119 +202,6 @@ static void TryHookMainThread() {
         // Start ESP worker thread now that IL2CPP is fully initialized
         StartESPWorkerThread();
     }
-}
-
-// ══════════════════════════════════════════════════════════════════════
-// UNITY INPUT HOOK — UnityEngine.Input.GetTouch (primary touch source)
-// ══════════════════════════════════════════════════════════════════════
-
-static int g_touchPosOff = -1;
-static int g_touchPhaseOff = -1;
-
-// IL2CPP auto-properties back to m_<name>; resolve with fallback across the
-// simple and fully-qualified class names.
-static int ResolveTouchField(const char* base, const char* alt) {
-    int off = GetFieldOffset("Touch", base);
-    if (off < 0 && alt) off = GetFieldOffset("Touch", alt);
-    if (off < 0) off = GetFieldOffset("UnityEngine.Touch", base);
-    if (off < 0 && alt) off = GetFieldOffset("UnityEngine.Touch", alt);
-    return off;
-}
-
-
-
-static void my_GetTouch(void* ret, int index) {
-    // Guard: if orig_GetTouch is null or points into non-executable memory
-    // (Dobby hook failed) skip the call — never execute a null trampoline.
-    if (orig_GetTouch && is_valid_fn_ptr(orig_GetTouch))
-        orig_GetTouch(ret, index);
-    
-    static int s_gtLog = 0;
-    if (s_gtLog < 8) {
-        s_gtLog++;
-        __android_log_print(ANDROID_LOG_INFO, "FBK", "DIAG GetTouch called (idx=%d ret=%p posOff=%d phaseOff=%d imguiReady=%d)",
-             index, ret, g_touchPosOff, g_touchPhaseOff, g_imguiReady ? 1 : 0);
-    }
-    if (!g_imguiReady || !ret) return;
-
-    // Resolve Touch struct field offsets once (IL2CPP value-type fields).
-    if (g_touchPosOff < 0)   g_touchPosOff   = ResolveTouchField("position", "m_position");
-    if (g_touchPhaseOff < 0) g_touchPhaseOff = ResolveTouchField("phase", "m_phase");
-    if (g_touchPosOff < 0) return;
-
-    float px = *(float*)((uint8_t*)ret + g_touchPosOff);
-    float py = *(float*)((uint8_t*)ret + g_touchPosOff + 4);
-    int   phase = (g_touchPhaseOff >= 0) ? *(int*)((uint8_t*)ret + g_touchPhaseOff) : 0;
-
-    // TouchPhase: 0=Began, 1=Moved, 2=Stationary, 3=Ended, 4=Canceled
-    int32_t action;
-    if (phase == 0)            action = AMOTION_EVENT_ACTION_DOWN;
-    else if (phase == 3 || phase == 4) action = AMOTION_EVENT_ACTION_UP;
-    else                       action = AMOTION_EVENT_ACTION_MOVE; // Moved / Stationary
-
-    InputEvent ie{};
-    ie.type      = AINPUT_EVENT_TYPE_MOTION;
-    ie.action    = action;
-    ie.toolType  = AMOTION_EVENT_TOOL_TYPE_FINGER;
-    ie.fromUnity = true;
-    ie.x = px;
-    // Unity Touch.position is bottom-left origin (y-up); ImGui is top-left (y-down).
-    // Use the stored EGL surface height for a correct flip. If it isn't available yet
-    // fall back to py (no flip) — better than always producing 0.
-    int ph = g_physH;
-    ie.y = (ph > 0) ? ((float)ph - py) : py;
-
-    // Only enqueue if ImGui would want this event OR it's a release (always enqueue
-    // releases to avoid stuck-button state).
-    // NOTE: We enqueue BEFORE setting Stationary so ImGui sees the real action.
-    pthread_mutex_lock(&g_inputMutex);
-    g_inputQueue.push_back(ie);
-    pthread_mutex_unlock(&g_inputMutex);
-    if (!g_inputOK) g_inputOK = true;
-    g_getTouchWorking = true;
-
-    // Block the game from seeing this touch while ImGui is capturing it.
-    // Only suppress non-release phases; always let UP/Canceled through so
-    // the game's touch state machine doesn't get stuck.
-    if (g_touchPhaseOff >= 0 && g_wantCapture
-            && phase != 3 && phase != 4) // 3=Ended, 4=Canceled
-        *(int*)((uint8_t*)ret + g_touchPhaseOff) = 2; // TouchPhase::Stationary
-}
-
-static void SetupInputHooks() {
-    // Already successfully hooked or permanently gave up — nothing to do.
-    if (g_getTouchHooked) return;
-
-    // Try to resolve UnityEngine.Input.GetTouch via IL2CPP.
-    // We retry every frame (cheap) until it resolves or we give up.
-    void* ptr = nullptr;
-    if (IL2CPP::Globals.m_GameAssembly) {
-        ptr = IL2CPP::Class::Utils::GetMethodPointer("UnityEngine.Input", "GetTouch", 1);
-        if (!ptr)
-            ptr = IL2CPP::Class::Utils::GetMethodPointer("Input", "GetTouch", 1);
-    }
-
-    if (ptr) {
-        if (hook_func(ptr, (void*)my_GetTouch, (void**)&orig_GetTouch)) {
-            g_getTouchHooked = true;
-            if (!g_inputOK) { g_inputOK = true; }
-            LOGD("Unity Input.GetTouch hooked — primary touch source active");
-        } else {
-            // hook_func failed — DobbyHook couldn't install it.
-            // Limit retries to avoid hammering the hook system.
-            static int s_hookRetries = 0;
-            if (++s_hookRetries >= 3) {
-                g_getTouchHooked = true;   // stop retrying — flag as "done"
-                orig_GetTouch = nullptr;   // ensure we never call it
-                LOGW("Unity Input.GetTouch hook failed after %d attempts — "
-                     "falling back to AInputQueue only", s_hookRetries);
-            } else {
-                LOGW("Unity Input.GetTouch hook attempt %d failed — will retry", s_hookRetries);
-            }
-        }
-    }
-    // If ptr is null we keep retrying next frame — no pool slots consumed.
-    // AInputQueue (g_ainputHooked) acts as unconditional fallback.
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -409,19 +284,9 @@ static EGLBoolean my_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
         TryHookMainThread();
     }
 
-    // ── Set up Unity Input.GetTouch hook ──
-    // Retry every frame regardless of g_il2cppReady — the class may become
-    // available before the full IL2CPP init path completes. AInputQueue is
-    // always active as a fallback (g_ainputHooked set in init()).
-    if (!g_getTouchHooked) {
-        SetupInputHooks();
-    }
-
     // ── Mark INPUT green once a real event is received ──
-    // We no longer pre-emptively set g_inputOK=true just because the hook is
-    // installed; we wait for an actual event to confirm the path is working.
-    // (g_inputOK is set to true inside EnqueueAInputEvent / my_GetTouch
-    //  on first successful delivery.)
+    // We wait for an actual event (set in EnqueueAInputEvent) to confirm the
+    // AInputQueue path is delivering, rather than trusting hook installation alone.
 
     // ── ImGui one-time init ──
     if (!g_imguiReady) {
@@ -506,7 +371,7 @@ static EGLBoolean my_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     eglQuerySurface(dpy, surf, EGL_WIDTH, &physW);
     eglQuerySurface(dpy, surf, EGL_HEIGHT, &physH);
     if (physW <= 0 || physH <= 0) return orig_eglSwapBuffers(dpy, surf);
-    // Publish for Unity GetTouch Y-flip (read on game thread).
+    // Cache surface size (still read elsewhere for clamping/scale).
     g_physW = physW;
     g_physH = physH;
     io.DisplaySize = ImVec2((float)physW, (float)physH);
@@ -530,16 +395,14 @@ static EGLBoolean my_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     }
 
     // ── Feed queued native input to ImGui (thread-safe) ──
-    // Raw events were captured on Unity's input thread / AInputQueue and pushed
-    // into g_inputQueue. Drained HERE on the render thread so ImGuiIO is only
-    // ever touched from one thread (no race).
+    // Raw events were captured on the AInputQueue input thread and pushed into
+    // g_inputQueue. Drained HERE on the render thread so ImGuiIO is only ever
+    // touched from one thread (no race).
     //
-    // Coordinate spaces:
-    //   AInputQueue (fromUnity=false): already in EGL surface space (top-left, y-down).
-    //     No scaling or flip required.
-    //   Unity GetTouch (fromUnity=true): x in logical pixels (matches surface width),
-    //     y already flipped to top-left in my_GetTouch using g_physH.
-    //     No further transform required here.
+    // Coordinate space: AInputQueue coords are already in EGL surface space
+    // (top-left, y-down) — matches ImGui exactly, so NO scale or Y-flip is
+    // required. (The old UnityEngine.Input.GetTouch path did a bottom-left→
+    // top-left flip that mis-positioned taps; it has been removed.)
     {
         std::vector<InputEvent> local;
         pthread_mutex_lock(&g_inputMutex);
@@ -674,10 +537,6 @@ static EGLBoolean my_eglSwapBuffers(EGLDisplay dpy, EGLSurface surf) {
     // (above) and io.DeltaTime (above), which is all the Android NewFrame did anyway.
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
-
-    // Publish current capture state for the Unity GetTouch hook (reads it on the
-    // game thread to decide whether to block the touch from the game).
-    g_wantCapture = io.WantCaptureMouse;
 
     // ── Gesture processing: touch-drag-to-scroll + long-press → right-click ──
     // Runs AFTER ImGui::NewFrame() so io.MouseDown / io.MouseDownDuration are

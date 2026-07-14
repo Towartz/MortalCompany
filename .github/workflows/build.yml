@@ -1,0 +1,105 @@
+name: Build
+
+# Builds every MortalCompany variant on push to its branch (and on manual dispatch / PRs).
+# Each matrix entry checks out its own branch, so the working tree contains exactly that variant.
+#  - main         -> LGL Android app  (app-debug.apk via Gradle/AGP ndkBuild)
+#  - imgui        -> cheat/   native libfbk.so (ndk-build)
+#  - imgui-backup -> cheat_bak/ native libfbk.so (ndk-build)
+on:
+  push:
+    branches: [main, imgui, imgui-backup]
+  pull_request:
+    branches: [main, imgui, imgui-backup]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ matrix.branch }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lgl-app
+            branch: main
+            kind: gradle
+            jni: app/src/main/jni
+          - name: imgui
+            branch: imgui
+            kind: ndk
+            jni: cheat/jni
+          - name: imgui-backup
+            branch: imgui-backup
+            kind: ndk
+            jni: cheat_bak/jni
+
+    steps:
+      - name: Checkout ${{ matrix.branch }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 1
+
+      # ----- Set up the Android toolchain (SDK + NDK r29) -----
+      - name: Set up Android SDK and NDK r29
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK r29, platform 36, build-tools 36.0.0
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "ndk;29.0.14206865" "platforms;android-36" "build-tools;36.0.0"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      # ===== LGL app (Gradle / AGP ndkBuild) =====
+      - name: Set up JDK 21
+        if: matrix.kind == 'gradle'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Point AGP at the CI NDK and SDK (neutralize hardcoded Windows ndkPath)
+        if: matrix.kind == 'gradle'
+        run: |
+          # app/build.gradle hardcodes ndkPath "S:/Projects/Android/..." which does not exist on Linux.
+          sed -i '/ndkPath/d' app/build.gradle
+          printf 'sdk.dir=%s\nndk.dir=%s\n' "$ANDROID_HOME" "$ANDROID_HOME/ndk/29.0.14206865" > local.properties
+          chmod +x gradlew
+
+      - name: Build debug APK (LGL)
+        if: matrix.kind == 'gradle'
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload app-debug.apk
+        if: matrix.kind == 'gradle'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ matrix.branch }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # ===== IMGUI cheat (plain ndk-build) =====
+      - name: Verify resolver dependency is present
+        if: matrix.kind == 'ndk'
+        run: test -d il2cpp_src/Il2cpp_Resolver_Android || { echo "::error::il2cpp_src/Il2cpp_Resolver_Android missing"; exit 1; }
+
+      - name: Build libfbk.so with ndk-build
+        if: matrix.kind == 'ndk'
+        run: |
+          cd "${{ matrix.jni }}"
+          "$ANDROID_HOME/ndk/29.0.14206865/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=./Android.mk \
+            NDK_APPLICATION_MK=./Application.mk \
+            -j"$(nproc)"
+
+      - name: Upload libfbk.so
+        if: matrix.kind == 'ndk'
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfbk-${{ matrix.branch }}-arm64-v8a
+          path: ${{ matrix.jni }}/libs/arm64-v8a/libfbk.so
+          if-no-files-found: error

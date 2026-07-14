@@ -12,13 +12,12 @@ on:
     branches: [main, imgui, imgui-backup]
   workflow_dispatch:
 
-concurrency:
-  group: build-${{ matrix.branch }}
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    concurrency:
+      group: build-${{ matrix.branch }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:

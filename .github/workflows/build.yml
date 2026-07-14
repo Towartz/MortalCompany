@@ -45,7 +45,7 @@ jobs:
 
       # ----- Set up the Android toolchain (SDK + NDK r29) -----
       - name: Set up Android SDK and NDK r29
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v2.0.10
 
       - name: Install NDK r29, platform 36, build-tools 36.0.0
         run: |

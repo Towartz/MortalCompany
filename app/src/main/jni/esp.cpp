@@ -381,16 +381,32 @@ static GLint g_espScreenLoc = -1;
 
 static void EnsureESPProgram() {
     if (g_espProg) return;
+
+    GLint status;
+
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vs, 1, &g_espVertSrc, nullptr);
     glCompileShader(vs);
+    glGetShaderiv(vs, GL_COMPILE_STATUS, &status);
+    if (!status) { glDeleteShader(vs); return; }
+
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fs, 1, &g_espFragSrc, nullptr);
     glCompileShader(fs);
+    glGetShaderiv(fs, GL_COMPILE_STATUS, &status);
+    if (!status) { glDeleteShader(vs); glDeleteShader(fs); return; }
+
     g_espProg = glCreateProgram();
     glAttachShader(g_espProg, vs);
     glAttachShader(g_espProg, fs);
     glLinkProgram(g_espProg);
+    glGetProgramiv(g_espProg, GL_LINK_STATUS, &status);
+    if (!status) {
+        glDeleteProgram(g_espProg); g_espProg = 0;
+        glDeleteShader(vs); glDeleteShader(fs);
+        return;
+    }
+
     glDeleteShader(vs);
     glDeleteShader(fs);
     g_espScreenLoc = glGetUniformLocation(g_espProg, "uScreen");
@@ -524,6 +540,7 @@ void RenderESPGLES() {
     glUseProgram(g_espProg);
 
     GLint prevBlendSrc, prevBlendDst, prevProg, prevVao, prevVbo;
+    GLint prevTexture2D, prevActiveTexture, prevUnpackAlignment, prevSamplerBinding;
     GLint vp[4];
     GLboolean prevBlendEnabled = glIsEnabled(GL_BLEND);
     GLboolean prevDepthEnabled = glIsEnabled(GL_DEPTH_TEST);
@@ -535,6 +552,10 @@ void RenderESPGLES() {
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevVbo);
     glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture2D);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTexture);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevUnpackAlignment);
+    glGetIntegerv(GL_SAMPLER_BINDING, &prevSamplerBinding);
 
     // The game may have left depth/scissor/cull on; an overlay drawn at clip-z 0
     // would otherwise be depth-culled or clipped away, so disable them for the draw.
@@ -644,6 +665,10 @@ void RenderESPGLES() {
         glEnable(GL_CULL_FACE);
     else
         glDisable(GL_CULL_FACE);
+    glActiveTexture((GLenum)prevActiveTexture);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prevTexture2D);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, prevUnpackAlignment);
+    glBindSampler(prevActiveTexture - GL_TEXTURE0, (GLuint)prevSamplerBinding);
 
     g_espData.dataReady = false;
     pthread_mutex_unlock(&g_espData.mutex);

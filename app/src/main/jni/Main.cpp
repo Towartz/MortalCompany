@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <GLES3/gl3.h>
 #include <chrono>
 
@@ -23,6 +24,11 @@
 #include "esp.h"
 
 #define targetLibName OBFUSCATE("libil2cpp.so")
+
+// Atomic flag: set only after ALL Dobby hooks are installed.
+// Hooks early-return without custom logic until this flag is true,
+// preventing the race between hook installation and first invocation.
+static std::atomic<bool> g_hooksReady{false};
 
 // ── Feature list for Java overlay ──
 jobjectArray GetFeatureList(JNIEnv *env, jobject context) {
@@ -309,11 +315,20 @@ static void DoESPRender() {
     g_lastESP = now;
 
     GLint prevVao, prevVbo;
+    GLint prevTexture2D, prevActiveTexture, prevUnpackAlignment, prevSamplerBinding;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevVbo);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture2D);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTexture);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevUnpackAlignment);
+    glGetIntegerv(GL_SAMPLER_BINDING, &prevSamplerBinding);
 
     CRASH_GUARD(RenderESPGLES());
 
+    glActiveTexture((GLenum)prevActiveTexture);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prevTexture2D);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, prevUnpackAlignment);
+    glBindSampler(prevActiveTexture - GL_TEXTURE0, (GLuint)prevSamplerBinding);
     glBindVertexArray(prevVao);
     glBindBuffer(GL_ARRAY_BUFFER, prevVbo);
 }
@@ -324,7 +339,7 @@ static glDrawElements_t orig_glDrawElements = nullptr;
 
 static void my_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void* indices) {
     orig_glDrawElements(mode, count, type, indices);
-    LazyInitIL2CPP();
+    if (!g_hooksReady.load(std::memory_order_acquire)) return;
     DoESPRender();
 }
 
@@ -337,6 +352,10 @@ static eglSwapBuffers_t orig_eglSwapBuffers = nullptr;
 static eglSwapBuffersWithDamageKHR_t orig_eglSwapBuffersWithDamageKHR = nullptr;
 
 static void my_eglSwapBuffers(void* display, void* surface) {
+    if (!g_hooksReady.load(std::memory_order_acquire)) {
+        if (orig_eglSwapBuffers) orig_eglSwapBuffers(display, surface);
+        return;
+    }
     LazyInitIL2CPP();
     DoESPRender();
     if (orig_eglSwapBuffers) orig_eglSwapBuffers(display, surface);
@@ -344,6 +363,11 @@ static void my_eglSwapBuffers(void* display, void* surface) {
 
 // Some titles call the KHR damage variant instead of plain eglSwapBuffers.
 static void my_eglSwapBuffersWithDamageKHR(void* display, void* surface, void* rects, int n) {
+    if (!g_hooksReady.load(std::memory_order_acquire)) {
+        if (orig_eglSwapBuffersWithDamageKHR)
+            orig_eglSwapBuffersWithDamageKHR(display, surface, rects, n);
+        return;
+    }
     LazyInitIL2CPP();
     DoESPRender();
     if (orig_eglSwapBuffersWithDamageKHR)
@@ -414,6 +438,9 @@ void InitNative() {
         } else {
             LOGD("eglSwapBuffersWithDamageKHR not present (ok)");
         }
+
+        g_hooksReady.store(true, std::memory_order_release);
+        LOGI("All hooks installed, g_hooksReady=true");
     }).detach();
 }
 

@@ -534,6 +534,7 @@ void RenderESPGLES() {
     glGetIntegerv(GL_VIEWPORT, vp);
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevVbo);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
 
     // The game may have left depth/scissor/cull on; an overlay drawn at clip-z 0
     // would otherwise be depth-culled or clipped away, so disable them for the draw.

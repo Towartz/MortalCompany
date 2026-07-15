@@ -90,9 +90,22 @@ static AInputQueue_finishEvent_t orig_AInputQueue_finishEvent = nullptr;
 typedef int  (*AInputQueue_getEvent_t)(void* queue, void** outEvent);
 static AInputQueue_getEvent_t   orig_AInputQueue_getEvent = nullptr;
 
-// Extract an AInputEvent into our queue (motion + key). Called from whichever
-// AInputQueue hook actually fires. Returns true if something was queued.
-// AInputQueue coords are in window/surface space (top-left, y-down) so no flip needed.
+// Runtime-resolve AKeyEvent_getUnicodeChar (API 26+, missing from android-23 headers)
+static int32_t GetUnicodeChar(const AInputEvent* ev) {
+    typedef int32_t (*GetUnicodeChar_t)(const AInputEvent*);
+    static GetUnicodeChar_t fn = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        void* lib = dlopen("libandroid.so", RTLD_NOLOAD);
+        if (lib) fn = (GetUnicodeChar_t)dlsym(lib, "AKeyEvent_getUnicodeChar");
+        tried = true;
+    }
+    return fn ? fn(ev) : 0;
+}
+
+    // Extract an AInputEvent into our queue (motion + key). Called from whichever
+    // AInputQueue hook actually fires. Returns true if something was queued.
+    // AInputQueue coords are in window/surface space (top-left, y-down) so no flip needed.
 static bool EnqueueAInputEvent(AInputEvent* ev) {
     if (!ev) return false;
     InputEvent ie{};
@@ -102,17 +115,12 @@ static bool EnqueueAInputEvent(AInputEvent* ev) {
         int32_t a = AMotionEvent_getAction(ev);
         ie.pointerIndex = (a & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
         ie.action  = a & AMOTION_EVENT_ACTION_MASK;
-        // For non-primary pointers: map POINTER_DOWN/UP to DOWN/UP and use
-        // that pointer's own coordinates (not pointer 0's coordinates).
-        int32_t coordIdx = ie.pointerIndex; // which pointer's coords to use
+        // Ignore all non-primary pointer events (multi-touch). Only the first
+        // finger's DOWN/UP/MOVE generates events for ImGui. This avoids phantom
+        // tap sequences from POINTER_DOWN/POINTER_UP mapped to DOWN/UP.
+        int32_t coordIdx = ie.pointerIndex;
         if (ie.pointerIndex != 0) {
-            if (ie.action == AMOTION_EVENT_ACTION_POINTER_DOWN) {
-                ie.action = AMOTION_EVENT_ACTION_DOWN;
-            } else if (ie.action == AMOTION_EVENT_ACTION_POINTER_UP) {
-                ie.action = AMOTION_EVENT_ACTION_UP;
-            } else {
-                return false; // non-primary move events ignored
-            }
+            return false;
         }
         // Use the correct pointer index for coordinates
         size_t count = AMotionEvent_getPointerCount(ev);
@@ -128,8 +136,8 @@ static bool EnqueueAInputEvent(AInputEvent* ev) {
         ie.keyCode   = AKeyEvent_getKeyCode(ev);
         ie.scanCode  = AKeyEvent_getScanCode(ev);
         ie.metaState = AKeyEvent_getMetaState(ev);
-        // Capture unicode character for text input
-        ie.unicodeChar = 0;
+        // Capture unicode character for text input (0 if non-printable)
+        ie.unicodeChar = GetUnicodeChar(ev);
     } else {
         return false;
     }
@@ -224,6 +232,7 @@ struct GLStateBackup {
     GLint lastBlendEquationRGB, lastBlendEquationAlpha;
     GLint lastProgram, lastVAO, lastArrayBuffer, lastElementBuffer;
     GLboolean lastEnablePrimitiveRestart;
+    GLint lastTexture2D, lastActiveTexture, lastUnpackAlignment, lastSamplerBinding;
 };
 
 static void BackupGLState(GLStateBackup& s) {
@@ -244,6 +253,10 @@ static void BackupGLState(GLStateBackup& s) {
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &s.lastArrayBuffer);
     glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &s.lastElementBuffer);
     s.lastEnablePrimitiveRestart = glIsEnabled(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &s.lastTexture2D);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &s.lastActiveTexture);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &s.lastUnpackAlignment);
+    glGetIntegerv(GL_SAMPLER_BINDING, &s.lastSamplerBinding);
 }
 
 static void RestoreGLState(const GLStateBackup& s) {
@@ -258,6 +271,10 @@ static void RestoreGLState(const GLStateBackup& s) {
     if (s.lastCullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
     if (s.lastScissorTest) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
     if (s.lastEnablePrimitiveRestart) glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX); else glDisable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+    glActiveTexture((GLenum)s.lastActiveTexture);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)s.lastTexture2D);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, s.lastUnpackAlignment);
+    glBindSampler(s.lastActiveTexture - GL_TEXTURE0, (GLuint)s.lastSamplerBinding);
     glViewport(s.lastViewport[0], s.lastViewport[1], s.lastViewport[2], s.lastViewport[3]);
     glScissor(s.lastScissorBox[0], s.lastScissorBox[1], s.lastScissorBox[2], s.lastScissorBox[3]);
 }

@@ -2,14 +2,17 @@ name: Build
 
 # Builds every MortalCompany variant on push to its branch (and on manual dispatch / PRs).
 # Each matrix entry checks out its own branch, so the working tree contains exactly that variant.
-#  - main         -> LGL Android app  (app-debug.apk via Gradle/AGP ndkBuild)
-#  - imgui        -> cheat/   native libfbk.so (ndk-build)
-#  - imgui-backup -> cheat_bak/ native libfbk.so (ndk-build)
+#  - main                -> LGL Android app  (app-debug.apk via Gradle/AGP ndkBuild)
+#  - imgui               -> cheat/   native libfbk.so (ndk-build)  (original, kept for reference)
+#  - imgui-v1            -> cheat/   native libfbk.so (ndk-build)  (stable v1)
+#  - imgui-dev           -> cheat/   native libfbk.so (ndk-build)  (risky/dev)
+#  - imgui-backup        -> cheat_bak/ native libfbk.so (ndk-build) (original backup)
+#  - imgui-backup-v1     -> cheat_bak/ native libfbk.so (ndk-build) (backup v1)
 on:
   push:
-    branches: [main, imgui, imgui-backup]
+    branches: [main, imgui, imgui-v1, imgui-dev, imgui-backup, imgui-backup-v1]
   pull_request:
-    branches: [main, imgui, imgui-backup]
+    branches: [main, imgui, imgui-v1, imgui-dev, imgui-backup, imgui-backup-v1]
   workflow_dispatch:
 
 jobs:
@@ -30,8 +33,20 @@ jobs:
             branch: imgui
             kind: ndk
             jni: cheat/jni
+          - name: imgui-v1
+            branch: imgui-v1
+            kind: ndk
+            jni: cheat/jni
+          - name: imgui-dev
+            branch: imgui-dev
+            kind: ndk
+            jni: cheat/jni
           - name: imgui-backup
             branch: imgui-backup
+            kind: ndk
+            jni: cheat_bak/jni
+          - name: imgui-backup-v1
+            branch: imgui-backup-v1
             kind: ndk
             jni: cheat_bak/jni
 

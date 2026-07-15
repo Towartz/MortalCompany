@@ -57,6 +57,10 @@ libs/
 /imgui_src/
 /lglteam-menu/
 
+# ===== Cheat variants (moved to their own branches: imgui/v1, imgui-backup/v1, imgui-dev) =====
+/cheat/
+/cheat_bak/
+
 # ===== Archives / misc =====
 *.zip
 *.keystore
